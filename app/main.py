@@ -50,21 +50,27 @@ from .rate_limiter import RateLimiter
 from .store import ConversationStore, get_redis_client
 
 
+# ============================================================
+# SERVICE INFORMATION
+# ============================================================
+
 SERVICE_NAME = "day12-agent"
 SERVICE_VERSION = "1.0.0"
 
 
 # ============================================================
-# Providers — Dependency Injection
+# PROVIDERS — DEPENDENCY INJECTION
 # ============================================================
 
 @lru_cache(maxsize=1)
 def get_store() -> ConversationStore:
+    """Khởi tạo ConversationStore sử dụng Redis."""
     return ConversationStore(get_redis_client())
 
 
 @lru_cache(maxsize=1)
 def get_rate_limiter() -> RateLimiter:
+    """Khởi tạo RateLimiter từ Settings."""
     return RateLimiter(
         get_redis_client(),
         get_settings().rate_limit_per_minute,
@@ -73,6 +79,7 @@ def get_rate_limiter() -> RateLimiter:
 
 @lru_cache(maxsize=1)
 def get_cost_guard() -> CostGuard:
+    """Khởi tạo CostGuard từ Settings."""
     return CostGuard(
         get_redis_client(),
         get_settings().monthly_budget_usd,
@@ -80,28 +87,40 @@ def get_cost_guard() -> CostGuard:
 
 
 # ============================================================
-# Application Lifespan
+# APPLICATION LIFESPAN — CP4
 # ============================================================
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Chạy khi ứng dụng khởi động và tắt."""
+    """Quản lý vòng đời của ứng dụng."""
 
+    # Đặt lại trạng thái khi khởi động
+    lifecycle.shutting_down = False
+
+    # Đăng ký signal handler SIGTERM và SIGINT
     lifecycle.install()
 
+    # Ghi log khi service khởi động
     log_event(
         "service_started",
         service=SERVICE_NAME,
         version=SERVICE_VERSION,
     )
 
-    yield
+    try:
+        yield
 
-    log_event(
-        "service_stopped",
-        service=SERVICE_NAME,
-    )
+    finally:
+        # Ghi log khi service dừng
+        log_event(
+            "service_stopped",
+            service=SERVICE_NAME,
+        )
 
+
+# ============================================================
+# FASTAPI APPLICATION
+# ============================================================
 
 app = FastAPI(
     title="Day 12 Production Agent",
@@ -111,7 +130,7 @@ app = FastAPI(
 
 
 # ============================================================
-# Request Schema
+# REQUEST SCHEMA
 # ============================================================
 
 class AskRequest(BaseModel):
@@ -122,13 +141,17 @@ class AskRequest(BaseModel):
 
 
 # ============================================================
-# Health — CP1
+# CP1 — LIVENESS ENDPOINT
 # ============================================================
 
 @app.get("/health")
 def health():
-    """Liveness probe — kiểm tra process còn sống hay không."""
+    """Kiểm tra process còn sống hay đang shutdown.
 
+    Không gọi Redis hoặc bất kỳ dependency bên ngoài nào.
+    """
+
+    # Service đang shutdown
     if lifecycle.shutting_down:
         return JSONResponse(
             status_code=503,
@@ -137,6 +160,7 @@ def health():
             },
         )
 
+    # Service hoạt động bình thường
     return {
         "status": "ok",
         "service": SERVICE_NAME,
@@ -145,16 +169,16 @@ def health():
 
 
 # ============================================================
-# Readiness — CP4
+# CP4 — READINESS ENDPOINT
 # ============================================================
 
 @app.get("/ready")
 def ready(
     store: ConversationStore = Depends(get_store),
 ):
-    """Readiness probe — kiểm tra khả năng phục vụ request."""
+    """Kiểm tra service có sẵn sàng nhận request không."""
 
-    # 1. Kiểm tra trạng thái shutdown
+    # STEP 1: Kiểm tra trạng thái shutdown
     if lifecycle.shutting_down:
         return JSONResponse(
             status_code=503,
@@ -163,7 +187,7 @@ def ready(
             },
         )
 
-    # 2. Kiểm tra kết nối Redis
+    # STEP 2: Kiểm tra Redis
     if not store.ping():
         return JSONResponse(
             status_code=503,
@@ -173,7 +197,7 @@ def ready(
             },
         )
 
-    # 3. Redis hoạt động bình thường
+    # STEP 3: Redis hoạt động bình thường
     return {
         "status": "ready",
         "redis": True,
@@ -181,7 +205,7 @@ def ready(
 
 
 # ============================================================
-# Main Endpoint — CP3
+# CP3 — MAIN ENDPOINT /ask
 # ============================================================
 
 @app.post("/ask")
@@ -192,30 +216,43 @@ def ask(
     limiter: RateLimiter = Depends(get_rate_limiter),
     guard: CostGuard = Depends(get_cost_guard),
 ):
-    """Xử lý request theo đúng thứ tự CP3."""
+    """Xử lý request theo đúng thứ tự CP3.
+
+    Authentication
+    -> Rate limiting
+    -> Cost guard
+    -> Get history
+    -> Call LLM
+    -> Save history
+    -> Record cost
+    -> Structured logging
+    -> Response
+    """
 
     # --------------------------------------------------------
-    # STEP 1 — RATE LIMIT
-    # HTTP 429 nếu user gửi quá nhiều request
+    # STEP 1 — RATE LIMITING
+    # Trả HTTP 429 nếu vượt giới hạn request
     # --------------------------------------------------------
 
     limiter.check(user_id)
 
     # --------------------------------------------------------
     # STEP 2 — COST GUARD
-    # HTTP 402 nếu user đã hết ngân sách
+    # Trả HTTP 402 nếu đã hết ngân sách tháng
     # --------------------------------------------------------
 
     guard.check(user_id)
 
     # --------------------------------------------------------
     # STEP 3 — GET CONVERSATION HISTORY
+    # Đọc lịch sử hội thoại từ Redis
     # --------------------------------------------------------
 
     history = store.get_history(user_id)
 
     # --------------------------------------------------------
     # STEP 4 — CALL LLM
+    # Chỉ gọi LLM sau khi vượt qua các lớp bảo vệ
     # --------------------------------------------------------
 
     result = ask_llm(
@@ -225,6 +262,7 @@ def ask(
 
     # --------------------------------------------------------
     # STEP 5 — SAVE CONVERSATION
+    # Lưu cả câu hỏi và câu trả lời vào Redis
     # --------------------------------------------------------
 
     store.append(
@@ -241,6 +279,7 @@ def ask(
 
     # --------------------------------------------------------
     # STEP 6 — RECORD ACTUAL COST
+    # Cộng dồn chi phí LLM vừa phát sinh
     # --------------------------------------------------------
 
     guard.record(
@@ -277,7 +316,7 @@ def ask(
 
 
 # ============================================================
-# Local Development
+# LOCAL DEVELOPMENT
 # ============================================================
 
 if __name__ == "__main__":
