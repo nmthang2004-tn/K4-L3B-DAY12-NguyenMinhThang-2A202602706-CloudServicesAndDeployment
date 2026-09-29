@@ -2,7 +2,8 @@
 .env
 *.pem
 *.key
-
+.env.*
+!.env.example
 # Python
 __pycache__/
 *.py[cod]
@@ -20,6 +21,6 @@ Thumbs.db
 
 # Logs
 *.log
-
+*.pyc
 # Tài liệu nội bộ của giảng viên — không đẩy lên repo phát cho học viên
 solution/
