@@ -43,11 +43,19 @@ class ConversationStore:
         """Mỗi user có một Redis key riêng."""
         return f"history:{user_id}"
 
+    
     def ping(self) -> bool:
-        """Kiểm tra kết nối Redis."""
+        """Kiểm tra Redis và ghi log khi kết nối thất bại."""
 
         try:
-            return bool(self.client.ping())
+            result = self.client.ping()
+
+            print(
+                f"Redis ping result: {result}",
+                flush=True,
+            )
+
+            return bool(result)
 
         except Exception as exc:
             print(
@@ -55,6 +63,7 @@ class ConversationStore:
                 flush=True,
             )
             return False
+
 
     def append(
         self,
