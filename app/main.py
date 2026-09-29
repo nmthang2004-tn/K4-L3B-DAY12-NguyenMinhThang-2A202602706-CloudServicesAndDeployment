@@ -73,21 +73,25 @@ class AskRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────
 # Health & readiness
 # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Health & readiness
+# ─────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    """Liveness probe — process còn sống không?
+    """Liveness probe — process còn sống không?"""
+    # Kiểm tra cờ lifecycle xem service có đang trong quá trình shutdown hay không
+    if lifecycle.shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "shutting_down"},
+        )
 
-    TODO (CP1 + CP4):
-      - Đang tắt dần (``lifecycle.shutting_down``) → trả
-        ``JSONResponse(status_code=503, content={"status": "shutting_down"})``
-      - Bình thường → ``{"status": "ok", "service": SERVICE_NAME,
-        "version": SERVICE_VERSION}`` (mặc định FastAPI trả 200).
-
-    Endpoint này phải **nhẹ**: không gọi Redis, không query DB. Nó chỉ trả
-    lời câu hỏi "có cần restart container này không?". Nếu nó phụ thuộc
-    Redis, Redis chết một nhịp là cả cụm container bị restart theo.
-    """
-    raise NotImplementedError("TODO (CP1/CP4): cài đặt /health")
+    # Trạng thái bình thường: trả về 200 OK cùng thông tin service
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
+    }
 
 
 @app.get("/ready")

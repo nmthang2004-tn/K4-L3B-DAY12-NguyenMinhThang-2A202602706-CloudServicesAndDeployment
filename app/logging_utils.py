@@ -18,20 +18,20 @@ def utc_now_iso() -> str:
 
 
 def log_event(event: str, level: str = "info", **fields) -> str:
-    """Ghi một dòng log JSON ra stdout.
+    """Ghi một dòng log JSON ra stdout."""
+    # 1. Gom dict tối thiểu 3 trường và gộp các trường mở rộng
+    log_data = {
+        "event": event,
+        "level": level.lower(),
+        "timestamp": utc_now_iso(),
+        **fields,
+    }
 
-    TODO (CP1): tạo dict gồm tối thiểu 3 khóa
-        - "event"     : tên sự kiện, lấy từ tham số ``event``
-        - "level"     : mức log, VIẾT THƯỜNG (dùng ``level.lower()``)
-        - "timestamp" : ``utc_now_iso()``
-    rồi gộp thêm mọi cặp key/value trong ``**fields``.
+    # 2. Serialize thành đúng 1 dòng, giữ nguyên tiếng Việt (ensure_ascii=False), không dùng indent
+    log_line = json.dumps(log_data, ensure_ascii=False)
 
-    In chuỗi JSON đó ra stdout **trên một dòng duy nhất**
-    (``json.dumps(..., ensure_ascii=False)``, đừng dùng ``indent``) và
-    trả về chính chuỗi đó.
+    # 3. In ra stdout trên một dòng duy nhất
+    print(log_line)
 
-    Ví dụ:
-        >>> log_event("ask_completed", user_id="sv01", cost_usd=0.0001)
-        '{"event": "ask_completed", "level": "info", "timestamp": "...", ...}'
-    """
-    raise NotImplementedError("TODO (CP1): cài đặt log_event")
+    # 4. Trả về chuỗi JSON
+    return log_line
