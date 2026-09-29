@@ -1,14 +1,33 @@
+
 """Agent service — điểm ráp nối của cả lab (CP1, CP3, CP4).
 
 Luồng một request tới /ask:
 
-    client ──► verify_api_key ──► rate_limiter ──► cost_guard
-                                                       │
-                              store.get_history ◄──────┘
-                                       │
-                                    ask_llm
-                                       │
-                              store.append × 2 ──► cost_guard.record ──► log_event
+    client
+      |
+      v
+    verify_api_key
+      |
+      v
+    rate_limiter
+      |
+      v
+    cost_guard
+      |
+      v
+    store.get_history
+      |
+      v
+    ask_llm
+      |
+      v
+    store.append x 2
+      |
+      v
+    cost_guard.record
+      |
+      v
+    log_event
 """
 
 from __future__ import annotations
@@ -30,15 +49,15 @@ from .logging_utils import log_event
 from .rate_limiter import RateLimiter
 from .store import ConversationStore, get_redis_client
 
+
 SERVICE_NAME = "day12-agent"
 SERVICE_VERSION = "1.0.0"
 
 
-# ─────────────────────────────────────────────────────────────
-# Providers — CHO SẴN
-# Tách ra thành hàm để test có thể thay bằng Redis giả qua
-# app.dependency_overrides, và để kết nối Redis chỉ tạo khi thật sự cần.
-# ─────────────────────────────────────────────────────────────
+# ============================================================
+# Providers — Dependency Injection
+# ============================================================
+
 @lru_cache(maxsize=1)
 def get_store() -> ConversationStore:
     return ConversationStore(get_redis_client())
@@ -46,47 +65,78 @@ def get_store() -> ConversationStore:
 
 @lru_cache(maxsize=1)
 def get_rate_limiter() -> RateLimiter:
-    return RateLimiter(get_redis_client(), get_settings().rate_limit_per_minute)
+    return RateLimiter(
+        get_redis_client(),
+        get_settings().rate_limit_per_minute,
+    )
 
 
 @lru_cache(maxsize=1)
 def get_cost_guard() -> CostGuard:
-    return CostGuard(get_redis_client(), get_settings().monthly_budget_usd)
+    return CostGuard(
+        get_redis_client(),
+        get_settings().monthly_budget_usd,
+    )
 
+
+# ============================================================
+# Application Lifespan
+# ============================================================
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """CHO SẴN — chạy lúc app khởi động và lúc tắt."""
+    """Chạy khi ứng dụng khởi động và tắt."""
+
     lifecycle.install()
-    log_event("service_started", service=SERVICE_NAME, version=SERVICE_VERSION)
+
+    log_event(
+        "service_started",
+        service=SERVICE_NAME,
+        version=SERVICE_VERSION,
+    )
+
     yield
-    log_event("service_stopped", service=SERVICE_NAME)
+
+    log_event(
+        "service_stopped",
+        service=SERVICE_NAME,
+    )
 
 
-app = FastAPI(title="Day 12 Production Agent", version=SERVICE_VERSION, lifespan=lifespan)
+app = FastAPI(
+    title="Day 12 Production Agent",
+    version=SERVICE_VERSION,
+    lifespan=lifespan,
+)
 
+
+# ============================================================
+# Request Schema
+# ============================================================
 
 class AskRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=2000)
+    question: str = Field(
+        min_length=1,
+        max_length=2000,
+    )
 
 
-# ─────────────────────────────────────────────────────────────
-# Health & readiness
-# ─────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────
-# Health & readiness
-# ─────────────────────────────────────────────────────────────
+# ============================================================
+# Health — CP1
+# ============================================================
+
 @app.get("/health")
 def health():
-    """Liveness probe — process còn sống không?"""
-    # Kiểm tra cờ lifecycle xem service có đang trong quá trình shutdown hay không
+    """Liveness probe — kiểm tra process còn sống hay không."""
+
     if lifecycle.shutting_down:
         return JSONResponse(
             status_code=503,
-            content={"status": "shutting_down"},
+            content={
+                "status": "shutting_down",
+            },
         )
 
-    # Trạng thái bình thường: trả về 200 OK cùng thông tin service
     return {
         "status": "ok",
         "service": SERVICE_NAME,
@@ -94,24 +144,46 @@ def health():
     }
 
 
+# ============================================================
+# Readiness — CP4
+# ============================================================
+
 @app.get("/ready")
-def ready(store: ConversationStore = Depends(get_store)):
-    """Readiness probe — đã sẵn sàng nhận traffic chưa?
+def ready(
+    store: ConversationStore = Depends(get_store),
+):
+    """Readiness probe — kiểm tra khả năng phục vụ request."""
 
-    TODO (CP4):
-      - Đang tắt dần → 503 ``{"status": "shutting_down"}``
-      - ``store.ping()`` False → 503 ``{"status": "not ready", "redis": False}``
-      - Ngược lại → ``{"status": "ready", "redis": True}``
+    # 1. Kiểm tra trạng thái shutdown
+    if lifecycle.shutting_down:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "shutting_down",
+            },
+        )
 
-    Khác /health ở chỗ: endpoint này ĐƯỢC PHÉP kiểm tra dependency. Load
-    balancer dùng nó để quyết định có đẩy request vào instance này không.
-    """
-    raise NotImplementedError("TODO (CP4): cài đặt /ready")
+    # 2. Kiểm tra kết nối Redis
+    if not store.ping():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not ready",
+                "redis": False,
+            },
+        )
+
+    # 3. Redis hoạt động bình thường
+    return {
+        "status": "ready",
+        "redis": True,
+    }
 
 
-# ─────────────────────────────────────────────────────────────
-# Endpoint chính
-# ─────────────────────────────────────────────────────────────
+# ============================================================
+# Main Endpoint — CP3
+# ============================================================
+
 @app.post("/ask")
 def ask(
     payload: AskRequest,
@@ -120,40 +192,101 @@ def ask(
     limiter: RateLimiter = Depends(get_rate_limiter),
     guard: CostGuard = Depends(get_cost_guard),
 ):
-    """Hỏi agent một câu.
+    """Xử lý request theo đúng thứ tự CP3."""
 
-    TODO (CP3 + CP4) — làm ĐÚNG THỨ TỰ sau:
-      1. ``limiter.check(user_id)``           → 429 nếu gọi quá nhanh
-      2. ``guard.check(user_id)``             → 402 nếu hết ngân sách
-      3. ``history = store.get_history(user_id)``
-      4. ``result = ask_llm(payload.question, history)``
-      5. ``store.append(user_id, "user", payload.question)`` và
-         ``store.append(user_id, "assistant", result["answer"])``
-      6. ``guard.record(user_id, result["cost_usd"])``
-      7. ``log_event("ask_completed", user_id=user_id,
-         tokens_in=result["tokens_in"], tokens_out=result["tokens_out"],
-         cost_usd=result["cost_usd"])``
-      8. trả về::
+    # --------------------------------------------------------
+    # STEP 1 — RATE LIMIT
+    # HTTP 429 nếu user gửi quá nhiều request
+    # --------------------------------------------------------
 
-            {
-                "answer": result["answer"],
-                "user_id": user_id,
-                "history_length": len(history),
-                "cost_usd": result["cost_usd"],
-                "tokens": {"in": result["tokens_in"], "out": result["tokens_out"]},
-            }
+    limiter.check(user_id)
 
-    Vì sao check trước rồi mới gọi LLM? Vì tiền mất ở bước gọi LLM. Chặn sau
-    khi đã gọi thì bạn vừa trả tiền vừa trả lỗi.
+    # --------------------------------------------------------
+    # STEP 2 — COST GUARD
+    # HTTP 402 nếu user đã hết ngân sách
+    # --------------------------------------------------------
 
-    ``user_id`` do ``verify_api_key`` trả về, nên request không có API key
-    hợp lệ sẽ dừng ở 401 trước khi chạm vào bất cứ dòng nào ở đây.
-    """
-    raise NotImplementedError("TODO (CP3/CP4): cài đặt /ask")
+    guard.check(user_id)
 
+    # --------------------------------------------------------
+    # STEP 3 — GET CONVERSATION HISTORY
+    # --------------------------------------------------------
+
+    history = store.get_history(user_id)
+
+    # --------------------------------------------------------
+    # STEP 4 — CALL LLM
+    # --------------------------------------------------------
+
+    result = ask_llm(
+        payload.question,
+        history,
+    )
+
+    # --------------------------------------------------------
+    # STEP 5 — SAVE CONVERSATION
+    # --------------------------------------------------------
+
+    store.append(
+        user_id,
+        "user",
+        payload.question,
+    )
+
+    store.append(
+        user_id,
+        "assistant",
+        result["answer"],
+    )
+
+    # --------------------------------------------------------
+    # STEP 6 — RECORD ACTUAL COST
+    # --------------------------------------------------------
+
+    guard.record(
+        user_id,
+        result["cost_usd"],
+    )
+
+    # --------------------------------------------------------
+    # STEP 7 — STRUCTURED LOGGING
+    # --------------------------------------------------------
+
+    log_event(
+        "ask_completed",
+        user_id=user_id,
+        tokens_in=result["tokens_in"],
+        tokens_out=result["tokens_out"],
+        cost_usd=result["cost_usd"],
+    )
+
+    # --------------------------------------------------------
+    # STEP 8 — RETURN RESPONSE
+    # --------------------------------------------------------
+
+    return {
+        "answer": result["answer"],
+        "user_id": user_id,
+        "history_length": len(history),
+        "cost_usd": result["cost_usd"],
+        "tokens": {
+            "in": result["tokens_in"],
+            "out": result["tokens_out"],
+        },
+    }
+
+
+# ============================================================
+# Local Development
+# ============================================================
 
 if __name__ == "__main__":
     import uvicorn
 
     settings = get_settings()
-    uvicorn.run(app, host="0.0.0.0", port=settings.port)
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=settings.port,
+    )
