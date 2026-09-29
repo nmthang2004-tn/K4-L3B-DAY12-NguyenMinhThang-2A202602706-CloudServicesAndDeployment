@@ -44,12 +44,16 @@ class ConversationStore:
         return f"history:{user_id}"
 
     def ping(self) -> bool:
-        """Kiểm tra Redis có sẵn sàng hay không."""
+        """Kiểm tra kết nối Redis."""
 
         try:
             return bool(self.client.ping())
 
-        except Exception:
+        except Exception as exc:
+            print(
+                f"Redis connection failed: {type(exc).__name__}",
+                flush=True,
+            )
             return False
 
     def append(
