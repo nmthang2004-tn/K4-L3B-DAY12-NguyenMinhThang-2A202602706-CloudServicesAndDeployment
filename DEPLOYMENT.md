@@ -1,66 +1,118 @@
 # Thông Tin Deploy — Checkpoint 5
 
-> Điền file này sau khi deploy xong. `pytest tests/test_cp5.py` đọc file này
-> để tìm địa chỉ service của bạn và gọi thử.
->
-> **Chỉ ghi TÊN biến môi trường, tuyệt đối không dán giá trị API key vào đây.**
-> Repo này công khai — dán khóa vào là mất khóa.
-
-## Thông Tin Học Viên
+## 1. Thông Tin Học Viên
 
 | Mục | Nội dung |
 |-----|----------|
-| Họ và tên | (điền họ tên) |
-| Mã học viên | (điền mã học viên) |
-| Repo | (điền link repo K4-L3B-DAY12-HoVaTen-MSSV-CloudServicesAndDeployment) |
+| Họ và tên | Nguyễn Minh Thắng |
+| Mã học viên | 2A202602706 |
+| Repo | https://github.com/nmthang2004-th/K4-L3B-DAY12-NguyenMinhThang-2A202602706-CloudServicesAndDeployment |
 
-## Service
+## 2. Thông Tin Service
 
 | Mục | Nội dung |
 |-----|----------|
-| Public URL | https://TODO-thay-bang-url-that.up.railway.app |
-| Platform | Railway / Render / Cloud Run — (điền platform bạn dùng) |
-| Ngày deploy | (điền ngày) |
+| Public URL | https://day12-agent-iw7k.onrender.com/ |
+| Platform | Render |
+| Deployment Method | Render Blueprint (`render.yaml`) |
+| Application | FastAPI + Docker |
+| Database | Render Key Value (Redis) |
+| Ngày deploy | 29/09/2026 |
+| Environment | Production |
 
-## Biến Môi Trường Đã Set Trên Cloud
+Hệ thống được triển khai trên Render với hai thành phần chính:
 
-Ghi tên biến và **nguồn giá trị**, không ghi giá trị:
+- **Web Service:** Chạy FastAPI Agent từ Dockerfile.
+- **Render Key Value:** Lưu lịch sử hội thoại, dữ liệu rate limiting và chi phí sử dụng theo tháng.
+
+Ứng dụng kết nối Redis thông qua Internal Connection String, giúp dữ liệu được lưu bên ngoài process và có thể chia sẻ giữa các instance.
+
+## 3. Biến Môi Trường Đã Set Trên Cloud
+
+Chỉ ghi tên biến môi trường và nguồn cấu hình, không công khai giá trị secret.
 
 | Biến | Đã set | Ghi chú |
 |------|--------|---------|
-| `PORT` | ✅ | platform tự gán |
-| `AGENT_API_KEY` | ✅ | đặt trong dashboard, không nằm trong repo |
-| `REDIS_URL` | ✅ | (điền: Redis add-on của platform / Upstash / ...) |
+| `PORT` | ✅ | Render tự cung cấp |
+| `AGENT_API_KEY` | ✅ | Secret được cấu hình trong Render Dashboard |
+| `REDIS_URL` | ✅ | Internal Connection String từ Render Key Value |
 | `RATE_LIMIT_PER_MINUTE` | ✅ | 10 |
 | `MONTHLY_BUDGET_USD` | ✅ | 10.0 |
 | `LOG_LEVEL` | ✅ | INFO |
 
-## Lệnh Kiểm Tra
+API key và thông tin xác thực Redis không được hard-code trong source code hoặc commit lên GitHub.
 
-Thay `<URL>` bằng Public URL ở trên:
+## 4. Lệnh Kiểm Tra
+
+Public URL:
+
+`https://day12-agent-iw7k.onrender.com`
+
+### Test 1 — Liveness
 
 ```bash
-# 1. Liveness — mong đợi 200 {"status":"ok"}
-curl -i <URL>/health
+curl -i https://day12-agent-iw7k.onrender.com/health
+```
 
-# 2. Readiness — mong đợi 200 {"status":"ready"} (đã nối được Redis)
-curl -i <URL>/ready
+Kết quả mong đợi: HTTP 200.
 
-# 3. Không có API key — mong đợi 401
-curl -i -X POST <URL>/ask \
+```json
+{
+  "status": "ok",
+  "service": "day12-agent",
+  "version": "1.0.0"
+}
+```
+
+### Test 2 — Readiness
+
+```bash
+curl -i https://day12-agent-iw7k.onrender.com/ready
+```
+
+Kết quả mong đợi: HTTP 200.
+
+```json
+{
+  "status": "ready",
+  "redis": true
+}
+```
+
+### Test 3 — Authentication (Không có API Key)
+
+```bash
+curl -i -X POST https://day12-agent-iw7k.onrender.com/ask \
   -H "Content-Type: application/json" \
   -d '{"question":"Hello"}'
+```
 
-# 4. Có API key — mong đợi 200 kèm câu trả lời
-curl -i -X POST <URL>/ask \
+Kết quả mong đợi: HTTP 401.
+
+```json
+{
+  "detail": "invalid or missing API key"
+}
+```
+
+### Test 4 — Authentication (API Key hợp lệ)
+
+```bash
+curl -i -X POST https://day12-agent-iw7k.onrender.com/ask \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $AGENT_API_KEY" \
   -H "X-User-Id: sv-test" \
   -d '{"question":"Deploy là gì?"}'
+```
 
-# 5. Rate limit — gọi 15 lần, những lần cuối phải trả 429
+Kết quả mong đợi: HTTP 200, trả về câu trả lời của Agent cùng thông tin user, token và chi phí.
+
+### Test 5 — Rate Limiting
+
+```bash
 for i in $(seq 1 15); do
-  curl -s -o /dev/null -w "%{http_code} " -X POST <URL>/ask \
+  curl -s -o /dev/null -w "%{http_code} " \
+    -X POST https://day12-agent-iw7k.onrender.com/ask \
     -H "Content-Type: application/json" \
     -H "X-API-Key: $AGENT_API_KEY" \
     -H "X-User-Id: sv-test" \
@@ -68,34 +120,58 @@ for i in $(seq 1 15); do
 done; echo
 ```
 
-## Kết Quả Chạy Thật
+Với giới hạn 10 request/phút, các request vượt quota trong cùng cửa sổ 60 giây phải trả HTTP 429.
 
-Dán output của các lệnh trên vào đây:
+## 5. Kết Quả Chạy Thật
 
+Điền output thực tế của các lệnh kiểm tra ở trên:
+
+```text
+Test 1 - /health:
+[Điền HTTP status và response thực tế]
+
+Test 2 - /ready:
+[Điền HTTP status và response thực tế]
+
+Test 3 - /ask without API key:
+[Điền HTTP status và response thực tế]
+
+Test 4 - /ask with valid API key:
+[Điền HTTP status và response thực tế, không hiển thị secret]
+
+Test 5 - Rate limiting:
+[Điền chuỗi HTTP status thực tế]
 ```
-(điền output)
-```
 
-## Ảnh Chụp Màn Hình
+## 6. Ảnh Chụp Màn Hình
 
-Đặt ảnh trong thư mục `screenshots/`:
+Các hình ảnh minh chứng được lưu tại thư mục `screenshots/`.
 
-- `screenshots/dashboard.png` — trang quản lý service trên platform
-- `screenshots/health.png` — kết quả gọi `/health` từ trình duyệt hoặc curl
+### Render Dashboard
 
----
+![Render Dashboard](screenshots/dashboard.png)
 
-## Nếu Dùng Phương Án Dự Phòng
+### Health Endpoint
 
-Không đăng ký được tài khoản cloud? Vẫn nộp được bài, nhưng CP5 tối đa 60% điểm:
+![Health Check](screenshots/health.png)
 
-1. Đặt `LOCAL_FALLBACK=true` trong `.env`
-2. Chạy `docker compose up -d` rồi kiểm tra `docker compose ps`
-3. Chụp màn hình vào `screenshots/`
-4. Chạy `pytest tests/test_cp5.py -v` — bộ test sẽ tự chuyển sang kiểm tra
-   `http://localhost:8000`
-5. Ghi rõ lý do không deploy được vào phần dưới đây:
+### Readiness Endpoint (Minh chứng bổ sung)
 
-```
-(điền lý do nếu dùng phương án dự phòng, ngược lại xóa mục này)
-```
+![Readiness Check](screenshots/ready.png)
+
+## 7. Tổng Kết
+
+Dự án sử dụng Render Blueprint để triển khai FastAPI Agent và Render Key Value.
+
+Hệ thống áp dụng các nội dung đã hoàn thành từ CP1 đến CP4:
+
+- 12-Factor Configuration và Structured Logging.
+- Multi-stage Docker Build và Non-root Container.
+- API Key Authentication, Rate Limiting và Cost Guard.
+- Redis Conversation Store, Liveness, Readiness và Graceful Shutdown.
+
+Việc nghiệm thu CP5 được xác nhận thông qua Public URL, kết quả kiểm thử thực tế, ảnh minh chứng và checkpoint `tests/test_cp5.py`.
+
+**Platform:** Render.
+
+**Local Fallback:** Không sử dụng.
